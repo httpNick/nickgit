@@ -1,8 +1,7 @@
 use configparser::ini::Ini;
 
 use std::{
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -70,6 +69,32 @@ fn repo_file(gitdir: &PathBuf, paths: &[&str], mkdir: bool) -> Result<Option<Pat
     }
 }
 
+fn create_repo_file(
+    gitdir: &PathBuf,
+    filename: &str,
+    initial_content: &str,
+) -> Result<PathBuf, io::Error> {
+    let paths = &[filename];
+    let filepath = repo_path(gitdir, paths);
+
+    if let Some(parent) = filepath.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(&filepath, initial_content)?;
+
+    Ok(filepath)
+}
+
+fn default_config_content() -> Ini {
+    let mut config = Ini::new();
+    config.set("core", "repositoryformatversion", Some(String::from("0")));
+    config.set("core", "filemode", Some(String::from("false")));
+    config.set("core", "bare", Some(String::from("false")));
+
+    config
+}
+
 pub fn repo_create(path: &Path) -> Result<GitRepository, io::Error> {
     let repo = GitRepository::build(path, true).unwrap();
 
@@ -90,14 +115,43 @@ pub fn repo_create(path: &Path) -> Result<GitRepository, io::Error> {
         fs::create_dir(&repo.worktree).unwrap();
     }
 
-    repo_dir(&repo.gitdir, &["branches"], true).unwrap();
-    repo_dir(&repo.gitdir, &["objects"], true).unwrap();
-    repo_dir(&repo.gitdir, &["refs", "tags"], true).unwrap();
-    repo_dir(&repo.gitdir, &["refs", "heads"], true).unwrap();
+    repo_dir(&repo.gitdir, &["branches"], true)?;
+    repo_dir(&repo.gitdir, &["objects"], true)?;
+    repo_dir(&repo.gitdir, &["refs", "tags"], true)?;
+    repo_dir(&repo.gitdir, &["refs", "heads"], true)?;
 
-    let mut head_file =
-        fs::File::create(repo_file(&repo.gitdir, &["HEAD"], false).unwrap().unwrap())?;
-    head_file.write_all(b"ref: refs/heads/master\n")?;
+    create_repo_file(
+        &repo.gitdir,
+        "description",
+        "Unnamed repository; edit this file 'description' to name the repository.\n",
+    )?;
+
+    create_repo_file(&repo.gitdir, "HEAD", "ref: refs/heads/master\n")?;
+
+    let config_file_path = create_repo_file(&repo.gitdir, "config", "")?;
+    let config = default_config_content();
+    config.write(config_file_path.to_str().unwrap())?;
 
     Ok(repo)
+}
+
+fn repo_find(path: &PathBuf, required: bool) -> Result<Option<GitRepository>, io::Error> {
+    if path.join(".git").is_dir() {
+        return match GitRepository::build(path, false) {
+            Ok(repo) => Ok(Some(repo)),
+            Err(e) => Err(e),
+        };
+    }
+
+    let parent = path.join("..");
+
+    if parent.eq(path) {
+        if required {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "No git directory."));
+        } else {
+            return Ok(None);
+        }
+    }
+
+    repo_find(&parent, required)
 }
